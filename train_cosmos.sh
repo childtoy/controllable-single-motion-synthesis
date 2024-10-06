@@ -1,0 +1,2 @@
+# python3 -m train.train_cosmos --dataset humanml --pkl_path save/humanml/0000/synthesis_dataset.pkl --save_dir save/humanml/cosmos/0000 --device 0 --lr_method ExponentialLR --lr_gamma 0.99998 --use_scale_shift_norm
+python3 -m train.train_cosmos --dataset mixamo --pkl_path save/mixamo/0000/synthesis_dataset.pkl --save_dir save/mixamo/cosmos/0000 --device 0 --lr_method ExponentialLR --lr_gamma 0.99998 --use_scale_shift_norm

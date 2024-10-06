@@ -1,0 +1,3 @@
+python3 -m densecls.train_dense_cls --dataset humanml --sin_path dataset/humanml/0000.npy --output_path save/densecls/humanml/0000 --device 0 
+# python3 -m densecls.train_dense_cls --dataset mixamo --sin_path dataset/mixamo/0000.bvh --output_path save/densecls/mixamo/0000 --device 0 
+# python3 -m densecls.train_dense_cls --dataset bvh_general --sin_path dataset/bvh/0000.bvh --output_path save/densecls/bvh/0000 --device 0 
