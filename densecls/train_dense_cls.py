@@ -34,7 +34,7 @@ model = DenseCLS_UNet(in_channels=n_joints)
 # Configuration
 max_iter    = int(3e4)
 batch_size  = 128
-print_every = 1e3
+print_every = 1e4
 eval_every  = 1e4
 
 # Loop

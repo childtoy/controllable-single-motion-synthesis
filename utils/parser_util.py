@@ -310,6 +310,7 @@ def evaluation_parser():
 def train_dense_cls_args():
     parser = ArgumentParser()
     add_dense_cls_options(parser)
+    add_base_options(parser)
     return parser.parse_args()
 
 def pred_dense_cls_args():

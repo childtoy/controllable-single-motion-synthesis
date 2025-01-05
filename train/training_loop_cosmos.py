@@ -9,7 +9,6 @@ import numpy as np
 import torch as th 
 import torch.nn.functional as F
 from torch.optim import AdamW
-
 from diffusion import logger
 from diffusion.fp16_util import MixedPrecisionTrainer
 from diffusion.resample import LossAwareSampler
@@ -246,7 +245,7 @@ class TrainLoop:
             logger.log(f"saving model...")
             filename = self.ckpt_file_name()
             with bf.BlobFile(bf.join(self.save_dir, filename), "wb") as f:
-                torch.save(state_dict, f)
+                th.save(state_dict, f)
 
         save_checkpoint(self.mp_trainer.master_params)
 
@@ -254,7 +253,7 @@ class TrainLoop:
             bf.join(self.save_dir, f"opt{self.total_step():09d}.pt"),
             "wb",
         ) as f:
-            torch.save(self.opt.state_dict(), f)
+            th.save(self.opt.state_dict(), f)
 
 
 def parse_resume_step_from_filename(filename):
