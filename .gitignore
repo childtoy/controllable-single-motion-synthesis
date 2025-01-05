@@ -3,4 +3,5 @@
 *.pt
 *.pyc
 *.pkl
+*.sh
 prepare/
