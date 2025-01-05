@@ -5,3 +5,5 @@
 *.pkl
 *.sh
 prepare/
+save/
+dataset/
