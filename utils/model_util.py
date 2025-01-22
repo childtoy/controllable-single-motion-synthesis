@@ -74,12 +74,12 @@ def create_model_and_diffusion(args, data, num_joints = None):
 def get_model_args(args, data, num_joints):
     # default args
     action_emb = 'tensor'
-    if args.unconstrained:
-        cond_mode = 'no_cond'
-    elif args.dataset == 'humanml':
-        cond_mode = 'text'
-    else:
-        cond_mode = 'action'
+    # if args.unconstrained:
+    cond_mode = 'no_cond'
+    # elif args.dataset == 'humanml':
+    #     cond_mode = 'text'
+    # else:
+    #     cond_mode = 'action'
     if data is not None and hasattr(data, 'dataset') and  hasattr(data.dataset, 'num_actions'):
         num_actions = data.dataset.num_actions
     else:
@@ -114,7 +114,10 @@ def get_model_args(args, data, num_joints):
             assert args.num_joints
             njoints = int(args.num_joints)
         nfeats = 9 if args.repr == '6d' else 7
-        njoints = njoints * nfeats
+        if num_joints is not None : 
+            njoints = njoints
+        else :             
+            njoints = njoints * nfeats
         nfeats = 1
 
     return {'modeltype': '', 'njoints': njoints, 'nfeats': nfeats, 'num_actions': num_actions,

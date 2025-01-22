@@ -48,7 +48,7 @@ def main(args=None):
     n_frames *= 2
     dist_util.setup_dist(args.device)
 
-    out_path = os.path.join('save', args.dataset, args.model_path.split('/')[-2])
+    out_path = os.path.join('save', args.dataset+'_'+args.path_prefix, args.model_path.split('/')[-2])
 
     if os.path.exists(out_path):
         shutil.rmtree(out_path)

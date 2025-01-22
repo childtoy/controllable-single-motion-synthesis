@@ -35,7 +35,8 @@ def parse_and_load_from_model(parser):
 
         else:
             print('Warning: was not able to load [{}], using default value [{}] instead.'.format(a, args.__dict__[a]))
-
+    print(args)
+    print(args.sin_path)
     return args
 
 
@@ -65,14 +66,16 @@ def add_dense_cls_options(parser):
     group.add_argument("--cls_model_path", type=str, help="Dense CLS model path")
     group.add_argument("--output_path", required=True, type=str, help="Dense CLS output path")
     group.add_argument("--dataset", default='humanml', choices=['humanml', 'mixamo', 'bvh_general'], type=str,
-                       help="Dataset name (choose from list).")
-        
+                       help="Dataset name (choose from list).")    
+    group.add_argument("--labels_str", default='', type=str,
+                       help="frame labels splited by 's' i.e 85s80s40")    
 def add_base_options(parser):
     group = parser.add_argument_group('base')
     group.add_argument("--cuda", default=True, type=bool, help="Use cuda device, otherwise use CPU.")
     group.add_argument("--device", default=0, type=int, help="Device id to use.")
     group.add_argument("--seed", default=10, type=int, help="For fixing random seed.")
     group.add_argument("--batch_size", default=64, type=int, help="Batch size during training.")
+    group.add_argument("--path_prefix", default='', type=str, help="prefix of output path")
 
 
 def add_diffusion_options(parser):

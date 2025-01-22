@@ -15,17 +15,17 @@ from utils.parser_util import train_dense_cls_args
 import json
 from Motion.AnimationStructure import get_kinematic_chain
 from scipy.interpolate import interp1d
-
+import sys
 
 args = train_dense_cls_args()
 fixseed(args.seed)
 
+motion, _ = load_sin_motion(args)
 
 if not os.path.exists(args.output_path):
     os.makedirs(args.output_path)
 
 
-motion, _ = load_sin_motion(args)
 motion = motion.permute(1,0,2)
 n_joints, n_featues, n_frames  = motion.shape
 accuracys = []
@@ -43,26 +43,31 @@ model.train()
 optm = th.optim.AdamW(params=model.parameters(),lr=1e-4,weight_decay=0.0)
 schd = th.optim.lr_scheduler.ExponentialLR(optimizer=optm,gamma=0.99998)
 criterion = th.nn.CrossEntropyLoss()
-
-
-# n_joints, n_frames = motion.shape
-# motion = motion.unsqueeze(1)
-
-
+print(args.labels_str)
 # Device Uniformly for Three Dense Labels 
-labels_0 = int(n_frames*0.3)
-labels_1 = int(n_frames*0.3)
-labels_2 = n_frames - labels_0 - labels_1
+if args.labels_str == '':
+    labels_0 = int(n_frames*0.3)
+    labels_1 = int(n_frames*0.3)
+    labels_2 = n_frames - labels_0 - labels_1
 
-labels_sublen = th.Tensor([labels_0,labels_1,labels_2])        
+else : 
+    labels_str = args.labels_str
+    labels_index = labels_str.split('s')
+    labels_0 = int(labels_index[0]) 
+    labels_1 = int(labels_index[1])
+    labels_2 = int(labels_index[2])
+        
 labels_org = [0]*labels_0+[1]*labels_1+[2]*labels_2
-
+labels_sublen = th.Tensor([labels_0,labels_1,labels_2])        
+if motion.shape[-1] == len(labels_org):
+    assert('wrong sequence length ')
+    
+    
 def adjust_sequence_length(input_data, labels_index, new_labels_index):
     new_length = new_labels_index.cumsum()
     num_joints, num_dim, num_frames = motion.shape
     input_data = input_data.reshape(num_joints*num_dim, num_frames).transpose(1,0)
     new_data = np.zeros(input_data.shape)
-    
     dims = input_data.shape[1]
     for dim in range(dims):
         data = input_data[:,dim]
@@ -74,6 +79,12 @@ def adjust_sequence_length(input_data, labels_index, new_labels_index):
             new_length = new_labels_index[i]
             new_start_idx = sum(new_labels_index[:i])
             interpolated_sequence = f(np.linspace(start_idx, end_idx - 1, new_length))
+
+            # print('new_start_idx', new_start_idx+new_length-new_start_idx)
+            # print(interpolated_sequence.shape)
+            # print(new_data.shape)
+            # print(new_start_idx+new_length)
+            # print(new_data[new_start_idx:new_start_idx+new_length, dim].shape)
             new_data[new_start_idx:new_start_idx+new_length, dim] = interpolated_sequence
     new_data = new_data.transpose(1,0)
     return new_data
@@ -126,12 +137,12 @@ for it in range(max_iter):
             ratio_2 = 0.5            
             labels_cond = [0]*round(labels_0*ratio_0)+[1]*(labels_1+round(labels_0*(1-ratio_0))+round(labels_2*(1-ratio_2)))+[2]*round(labels_2*ratio_2)
             if n_frames != len(labels_cond) : 
-                _frames = [2] * (n_frames - len(labels_cond))
-                labels_cond += _frames
-                new_labels_index = np.array([round(labels_0*ratio_0),(labels_1+round(labels_0*(1-ratio_0))+round(labels_2*(1-ratio_2))),round(labels_2*ratio_2)+len(_frames)])
+                diff_frames = (len(labels_cond)-n_frames)
+                labels_cond = [0]*round(labels_0*ratio_0)+[1]*(labels_1+round(labels_0*(1-ratio_0))+round(labels_2*(1-ratio_2)))+[2]*(round(labels_2*ratio_2)-diff_frames)
+                new_labels_index = np.array([round(labels_0*ratio_0),(labels_1+round(labels_0*(1-ratio_0))+round(labels_2*(1-ratio_2))),round(labels_2*ratio_2)-diff_frames])
             else :
                 new_labels_index = np.array([round(labels_0*ratio_0),(labels_1+round(labels_0*(1-ratio_0))+round(labels_2*(1-ratio_2))),round(labels_2*ratio_2)])    
-            new_labels_index = np.array([round(labels_0*ratio_0),(labels_1+round(labels_0*(1-ratio_0))+round(labels_2*(1-ratio_2))),round(labels_2*ratio_2)])
+            # new_labels_index = np.array([round(labels_0*ratio_0),(labels_1+round(labels_0*(1-ratio_0))+round(labels_2*(1-ratio_2))),round(labels_2*ratio_2)])
             motion_data = motion.cpu().numpy()
             labels_index = labels_sublen.numpy().astype(np.int32)
             output = adjust_sequence_length(motion_data, labels_index, new_labels_index)

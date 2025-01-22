@@ -40,6 +40,7 @@ def load_sin_motion(args):
         motion = motion.permute(1, 2, 0)  # n_frames x n_joints x n_feats  ==> n_joints x n_feats x n_frames
         motion = motion.reshape(-1, motion.shape[-1]).unsqueeze(0) # n_joints x n_feats x n_frames (n_joints = 1)
         motion = motion.to(torch.float32)  # align with network dtype
+        
 
     motion = motion.to(args.device)
     return motion, motion_data
