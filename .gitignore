@@ -4,6 +4,11 @@
 *.pyc
 *.pkl
 *.sh
+*.png
+*.jpg
+*.pdf
+t2m/
+*.ipynb
 prepare/
 save/
 dataset/
