@@ -33,9 +33,9 @@ def collate(batch, labels=None):
 
     motion = databatchTensor
     if labels is not None : 
-        cond = {'y': {'mask': maskbatchTensor, 'dense_label': labels, 'lengths': lenbatchTensor}}
+        cond = {'y': {'mask': maskbatchTensor, 'frame_labels': labels, 'lengths': lenbatchTensor}}
     else : 
-        cond = {'y': {'mask': maskbatchTensor,  'dense_label': None, 'lengths': lenbatchTensor}}
+        cond = {'y': {'mask': maskbatchTensor,  'frame_labels': None, 'lengths': lenbatchTensor}}
 
     if 'text' in notnone_batches[0]:
         textbatch = [b['text'] for b in notnone_batches]
@@ -54,9 +54,9 @@ def collate(batch, labels=None):
         action_text = [b['action_text']for b in notnone_batches]
         cond['y'].update({'action_text': action_text})
 
-    if 'dense_label' in notnone_batches[0]:
-        dense_label = [b['dense_label']for b in notnone_batches]
-        cond['y'].update({'dense_label': dense_label})
+    if 'frame_labels' in notnone_batches[0]:
+        dense_label = [b['frame_labels']for b in notnone_batches]
+        cond['y'].update({'frame_labels': dense_label})
 
     return motion, cond
 

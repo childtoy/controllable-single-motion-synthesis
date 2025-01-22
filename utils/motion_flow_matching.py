@@ -1,105 +1,74 @@
-from flow_matching import FlowMatching
-import torch
+import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
+from flow_matching.path.scheduler import CondOTScheduler
+from flow_matching.path import CondOTProbPath
+from flow_matching.solver import ODESolver
 
-class MotionFlowMatching(FlowMatching):
-    def __init__(self, sigma=0):
-        """
-        Args:
-            sigma: OT regularization strength
-        backbone은 나중에 설정
-        """
-        self.sigma = sigma
-        self.backbone = None
-
-    def set_backbone(self, backbone):
-        """backbone model 설정"""
-        self.backbone = backbone
-        super().__init__(backbone=backbone, sigma=self.sigma)
-
-    def get_motion_fields(self, x0, x1, t, *, model):
-        """
-        기존 구현과 동일
-        """
-        if self.backbone is None:
-            self.set_backbone(model)  # 더 명시적인 방법으로 backbone 설정
+class MotionFlowMatching(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.path = CondOTProbPath()
+        self.model = None
+        self.solver = None
+    def set_model(self, model):
+        self.model = model
+        # self.solver = ODESolver(velocity_model=lambda x, t, cond: self.model(x, t, y=cond)[0])
+        
+        def velocity_fn(t, x, **kwargs):
+            t_batch = t.repeat(x.shape[0]) if t.dim() == 0 else t
+            cond = {
+                'y': {
+                    'frame_labels': kwargs['kwargs']['y']['frame_labels'],
+                    'mask': None
+                }
+            }
+            return self.model(x, t_batch, y=cond['y'])[0]
             
-        t_ = t.view(-1, 1, 1)
-        xt = (1 - t_) * x0 + t_ * x1
-        vt = model(xt, t)
-        
-        if self.sigma > 0:
-            ut = x1 - x0
-            vt = (ut - vt) / self.sigma**2
-        
-        return vt
+        self.solver = ODESolver(velocity_model=velocity_fn)
 
-    def get_loss(self, x0, x1, t, model_kwargs=None):
-        """
-        Calculate Flow Matching loss
-        Args:
-            x0: starting motion
-            x1: target motion
-            t: time parameter
-            model_kwargs: additional arguments for conditioning
-        """
-        # Get predicted velocity field
-        vt = self.get_motion_fields(x0, x1, t, model=self.backbone)
+    def forward(self, x1, cond):
+        """Calculate training losses for a batch."""
+        t = th.rand(x1.shape[0], device=x1.device)
         
-        # Ground truth velocity field (constant)
-        vt_true = x1 - x0
-        
-        # Calculate MSE loss
-        loss = F.mse_loss(vt, vt_true)
-        
-        return loss
+        # Flow matching path
+        x0 = th.randn_like(x1)
+        path_batch = self.path.sample(x0, x1, t)
 
-    def sample(self, x0, num_steps=100, progress=False, model_kwargs=None):
-        """
-        Generate motion sequence using Euler integration
-        Args:
-            x0: initial motion
-            num_steps: number of integration steps
-            progress: whether to show progress bar
-            model_kwargs: additional arguments for conditioning
-        """
-        device = x0.device
-        dt = 1.0 / num_steps
+        # Model prediction
+        v_pred, model_cond = self.model(path_batch.x_t, t, y=cond['y'])
         
-        # Initialize trajectory
-        xt = x0
+        # Losses
+        fm_loss = F.mse_loss(v_pred, path_batch.dx_t)
+        cls_loss = F.cross_entropy(
+            model_cond.permute(0,2,1).reshape(-1, model_cond.size(1)),
+            cond['y']['frame_labels'].permute(0,2,1).reshape(-1,3)
+        )
         
-        for i in range(num_steps):
-            t = torch.ones(x0.shape[0], device=device) * i * dt
-            
-            with torch.no_grad():
-                # Get velocity field
-                vt = self.get_motion_fields(
-                    xt, None, t,
-                    model=self.backbone
-                )
-                
-                # Euler integration step
-                xt = xt + vt * dt
-                
-                # Optional: Apply motion constraints here
-                # xt = apply_motion_constraints(xt)
-        
-        return xt
+        return {
+            'fm_loss': fm_loss,
+            'cls_loss': cls_loss,
+            'loss': fm_loss + cls_loss
+        }
 
-    def forward(self, x0, x1, y=None):
-        """
-        Training forward pass
-        Args:
-            x0: starting motion
-            x1: target motion
-            y: conditioning (optional)
-        """
-        # Random time sampling
-        t = torch.rand(x0.shape[0], device=x0.device)
+    def sample(self, batch_size, motion_shape, cond, num_steps=10):
+        """Sample from the flow matching model."""
+        # solver = ODESolver(velocity_model=self.model)
+        device = next(self.model.parameters()).device
+        x_init = th.randn(*motion_shape, device=device)
+
+        time_grid = th.linspace(0, 1, steps=num_steps, device=x_init.device)
         
-        # Calculate loss
-        loss = self.get_loss(x0, x1, t, model_kwargs={'y': y})
+        # model_cond = {'y': {'mask': None,'frame_labels': cond}}
+
+        generated = self.solver.sample(
+            time_grid=time_grid,
+            x_init=x_init,
+            method='dopri5',
+            step_size=None,    # None -> let dopri5 adapt step size internally.
+            atol=1e-4,
+            rtol=1e-4,
+            kwargs=cond
+        )
         
-        return loss
+        return generated

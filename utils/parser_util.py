@@ -35,8 +35,6 @@ def parse_and_load_from_model(parser):
 
         else:
             print('Warning: was not able to load [{}], using default value [{}] instead.'.format(a, args.__dict__[a]))
-    print(args)
-    print(args.sin_path)
     return args
 
 
@@ -146,7 +144,7 @@ def add_model_options(parser):
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
     group.add_argument("--dataset", default='humanml', choices=['humanml', 'mixamo', 'bvh_general'], type=str,
-                       help="Dataset name (choose from list).")
+                       help="Dataset name   (choose from list).")
     group.add_argument("--repr", default='6d',
                        type=str,
                        help="Motion representation (choose from list).")
@@ -156,13 +154,12 @@ def add_data_options(parser):
                        help="Pickle data from dense cls prediction result for training cosmos.")
     group.add_argument("--num_joints", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
-
-
+    group.add_argument("--sin_path", type=str, help=".")
 
 def add_single_motion_options(parser):
     group = parser.add_argument_group(('single_motion'))
     group.add_argument("--crop_ratio", default=3.6, type=float, help=".")
-    group.add_argument("--sin_path", type=str, help=".")
+    # group.add_argument("--sin_path", type=str, help=".")
 
 
 
@@ -189,11 +186,11 @@ def add_training_options(parser):
                        help="Number of repetitions for evaluation loop during training.")
     group.add_argument("--eval_num_samples", default=500, type=int,
                        help="If -1, will use all samples in the specified split.")
-    group.add_argument("--log_interval", default=1_000, type=int,
+    group.add_argument("--log_interval", default=50_000, type=int,
                        help="Log losses each N steps")
-    group.add_argument("--save_interval", default=10_000, type=int,
+    group.add_argument("--save_interval", default=50_000, type=int,
                        help="Save checkpoints and run evaluation each N steps")
-    group.add_argument("--num_steps", default=60_000, type=int,
+    group.add_argument("--num_steps", default=1_000_000, type=int,
                        help="Training will stop after the specified number of steps.")
     group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D this field is ignored.")
@@ -222,6 +219,9 @@ def add_generate_options(parser):
     group.add_argument("--motion_length", default=None, type=float,
                        help="The length of the sampled motion [in seconds]. "
                             "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
+    group.add_argument("--labels_str", default='', type=str,
+                       help="frame labels splited by 's' i.e 85s80s40")    
+
 
 def add_edit_options(parser):
     group = parser.add_argument_group('edit')
@@ -298,6 +298,7 @@ def generate_cosmos_args():
     parser = ArgumentParser()
     # args specified by the user: (all other will be loaded from the model)
     add_base_options(parser)
+    # add_data_options(parser)
     add_sampling_options(parser)
     add_generate_options(parser)
     return parse_and_load_from_model(parser)

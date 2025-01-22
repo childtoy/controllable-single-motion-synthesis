@@ -302,7 +302,7 @@ class GaussianDiffusion:
 
         B, C = x.shape[:2]
         assert t.shape == (B,)
-        if model_kwargs['y']['dense_label'] is not None :
+        if model_kwargs['y']['frame_labels'] is not None :
             model_output, bcond = model(x, self._scale_timesteps(t), **model_kwargs)
             _, predicted = th.max(bcond.data, 1)
             # print('predicted:',predicted[0])
@@ -1078,7 +1078,7 @@ class GaussianDiffusion:
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            if model_kwargs['y']['dense_label'] is not None :
+            if model_kwargs['y']['frame_labels'] is not None :
                 model_output, model_cond = model(x_t, self._scale_timesteps(t), **model_kwargs)
             else : 
                 model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
@@ -1115,12 +1115,12 @@ class GaussianDiffusion:
             assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
 
             terms["rot_mse"] = self.masked_l2(target, model_output, mask) # mean_flat(rot_mse)
-            if model_kwargs['y']['dense_label'] is not None :
+            if model_kwargs['y']['frame_labels'] is not None :
                 model_cond = model_cond.permute(0,2,1).reshape(-1, model_cond.size(1))
-                terms["dense_cls"] = self.criterion(model_cond, model_kwargs['y']['dense_label'].permute(0,2,1).reshape(-1,3))
+                terms["frame_labels"] = self.criterion(model_cond, model_kwargs['y']['frame_labels'].permute(0,2,1).reshape(-1,3))
             else : 
-                terms["dense_cls"] = 0 
-            terms["loss"] = terms["rot_mse"] + terms.get('vb', 0.) + terms["dense_cls"]
+                terms["frame_labels"] = 0 
+            terms["loss"] = terms["rot_mse"] + terms.get('vb', 0.) + terms["frame_labels"]
 
         else:
             raise NotImplementedError(self.loss_type)

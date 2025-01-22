@@ -137,7 +137,7 @@ class TrainLoop:
         for self.step in range(self.num_steps-self.resume_step):
             idx = np.random.choice(motion.shape[0], self.batch_size)        
             batch = motion[idx] # [B x C x L]
-            cond = {'y': {'mask': None, 'dense_label': labels[idx]}}
+            cond = {'y': {'mask': None, 'frame_labels': labels[idx]}}
             self.run_step(batch, cond)
             start_time_measure, time_measure = self.apply_logging(start_time_measure, time_measure)
 

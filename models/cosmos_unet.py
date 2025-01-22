@@ -447,12 +447,19 @@ class COSMOS_FlowModel(nn.Module):
         self.motion_args = motion_args
         # Time embedding
         time_dim = model_channels * 4
+        
         self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbeddings(model_channels),
-            nn.Linear(model_channels, time_dim),
+            linear(model_channels, time_dim),
             nn.SiLU(),
-            nn.Linear(time_dim, time_dim),
+            linear(time_dim, time_dim),
         )
+
+        # self.time_mlp = nn.Sequential(
+        #     SinusoidalPositionEmbeddings(model_channels),
+        #     nn.Linear(model_channels, time_dim),
+        #     nn.SiLU(),
+        #     nn.Linear(time_dim, time_dim),
+        # )
 
         # Model parameters
         self.image_size = image_size
@@ -471,14 +478,20 @@ class COSMOS_FlowModel(nn.Module):
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
         
+        
         # Build model
-        ch = input_ch = int(channel_mult[0] * model_channels)
+        
+        # ch = input_ch = int(channel_mult[0] * model_channels)
+        ch = input_ch = 256
+        # print('ch', int(channel_mult[0] * model_channels))
+        # print('dims', dims, in_channels, ch, kernel_size, padding, padding_mode)
+        # print('resjl',  model_channels * channel_mult[0])
+
         self.input_blocks = nn.ModuleList([
             TimestepEmbedSequential(
                 conv_nd(dims, in_channels, ch, kernel_size, padding=padding, padding_mode=padding_mode)
             )
         ])
-        
         # Input half
         self._feature_size = ch
         input_block_chans = [ch]
@@ -488,13 +501,12 @@ class COSMOS_FlowModel(nn.Module):
                 layers = [
                     ResBlock(
                         ch,
-                        time_dim,
+                        time_embed_dim,
                         dropout,
-                        out_channels=mult * model_channels,
+                        out_channels=int(mult * model_channels),
                         dims=dims,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
-                        kernel_size=kernel_size,
                         padding_mode=padding_mode,
                         padding=padding,
                     )
@@ -502,14 +514,16 @@ class COSMOS_FlowModel(nn.Module):
                 ch = mult * model_channels
                 if ds in attention_resolutions and use_attention:
                     layers.append(
-                        AttentionBlock(
-                            ch,
-                            use_checkpoint=use_checkpoint,
-                            num_heads=num_heads,
-                            num_head_channels=num_head_channels,
-                            use_new_attention_order=use_new_attention_order,
+                            AttentionBlock(
+                                ch,
+                                use_checkpoint=use_checkpoint,
+                                num_heads=num_heads,
+                                num_head_channels=num_head_channels,
+                                use_new_attention_order=use_new_attention_order,
+                                use_qna=use_qna,
+                                kernel_size=kernel_size,
+                            )
                         )
-                    )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
                 input_block_chans.append(ch)
@@ -519,14 +533,13 @@ class COSMOS_FlowModel(nn.Module):
                     TimestepEmbedSequential(
                         ResBlock(
                             ch,
-                            time_dim,
+                            time_embed_dim,
                             dropout,
                             out_channels=out_ch,
                             dims=dims,
                             use_checkpoint=use_checkpoint,
                             use_scale_shift_norm=use_scale_shift_norm,
                             down=True,
-                            kernel_size=kernel_size,
                             padding_mode=padding_mode,
                             padding=padding,
                         )
@@ -945,7 +958,7 @@ class COSMOS_UNetModel(nn.Module):
         """
         hs = []
         hs_cond = []
-        y_densecond = y['dense_label']
+        y_densecond = y['frame_labels']
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
         if 'text' in self.motion_args['cond_mode']:
             emb += self.embed_text(self.mask_cond(y['text']))
