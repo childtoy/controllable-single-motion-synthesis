@@ -12,6 +12,8 @@ from torch.optim import AdamW
 from diffusion import logger
 from diffusion.fp16_util import MixedPrecisionTrainer
 from utils import dist_util
+from flow_matching.path import CondOTProbPath
+
 
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
@@ -19,23 +21,20 @@ from utils import dist_util
 INITIAL_LOG_LOSS_SCALE = 20.0
 
 class TrainLoop:
-    def __init__(self, args, train_platform, model, flow_matching, data):
+    def __init__(self, args, train_platform, model, data):
         self.args = args
         self.dataset = args.dataset
         self.train_platform = train_platform
         self.model = model
-        self.flow_matching = flow_matching
+        self.path = CondOTProbPath()  # OT path sampler
         self.cond_mode = model.cond_mode
         self.num_densecond_dim = args.num_densecond_dim
         self.data = data
         self.batch_size = args.batch_size
-        self.microbatch = args.batch_size  # deprecating this option
         self.lr = args.lr
         self.log_interval = args.log_interval
         self.save_interval = args.save_interval
         self.resume_checkpoint = args.resume_checkpoint
-        self.use_fp16 = False  # deprecating this option
-        self.fp16_scale_growth = 1e-3  # deprecating this option
         self.weight_decay = args.weight_decay
 
         self.step = 0
@@ -50,25 +49,15 @@ class TrainLoop:
         self.sync_cuda = th.cuda.is_available()
 
         self._load_and_sync_parameters()
-        self.mp_trainer = MixedPrecisionTrainer(
-            model=self.model,
-            use_fp16=self.use_fp16,
-            fp16_scale_growth=self.fp16_scale_growth,
-        )
 
         self.save_dir = args.save_dir
         self.overwrite = args.overwrite
 
         self.opt = AdamW(
-            self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
+                    self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay
         )
-        if self.lr_method == 'StepLR':
-            assert self.lr_step is not None
-            self.lr_scheduler = th.optim.lr_scheduler.StepLR(self.opt, self.lr_step, gamma=self.lr_gamma)
-        elif self.lr_method == 'ExponentialLR':
-            self.lr_scheduler = th.optim.lr_scheduler.ExponentialLR(self.opt, gamma=self.lr_gamma)
-        else:
-            assert self.lr_method is None, f'lr scheduling {self.lr_method} is not supported.'
+
+        self.lr_scheduler = th.optim.lr_scheduler.ExponentialLR(self.opt, gamma=self.lr_gamma)
 
         if self.resume_step:
             self._load_optimizer_state()
@@ -80,8 +69,6 @@ class TrainLoop:
             self.device = th.device(dist_util.dev())
 
         self.eval_wrapper = None
-        self.use_ddp = False
-        self.ddp_model = self.model
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -184,46 +171,29 @@ class TrainLoop:
             
     def run_step(self, batch, cond):
         self.forward_backward(batch, cond)
-        self.mp_trainer.optimize(self.opt)
+        self.model.optimize(self.opt)
         if hasattr(self, 'lr_scheduler'):
             self.lr_scheduler.step()
         self.log_step()
 
     def forward_backward(self, batch, cond):
-        self.mp_trainer.zero_grad()
-        for i in range(0, batch.shape[0], self.microbatch):
-            # Eliminates the microbatch feature
-            assert i == 0
-            assert self.microbatch == self.batch_size
-            micro = batch
-            micro_cond = cond
-            last_batch = (i + self.microbatch) >= batch.shape[0]
-            t = th.rand(micro.shape[0], device=self.device)
+        self.optimizer.zero_grad()
+
+        t = th.rand(batch.shape[0], device=self.device)
+        
+        x0 = th.randn_like(batch)
+        x1 = batch
+        
+        xt, vt = self.path.get_path_point_and_velocity(t, x0, x1)
+        v_pred = self.model(xt, t, y=cond)
+        
+        loss = F.mse_loss(v_pred, vt)
+        loss.backward()
+        
+        self.optimizer.step()
+        if hasattr(self, 'lr_scheduler'):
+            self.lr_scheduler.step()
             
-            # Random noise as starting point
-            x0 = th.randn_like(micro)  # [bs, ch, J, T]
-            x1 = micro  # target motion (real data)
-
-            compute_losses = functools.partial(
-                self.flow_matching.get_loss,
-                x0,          # random noise
-                x1,          # target motion (real data)
-                t,          # time parameter
-                model_kwargs=micro_cond
-            )
-
-            if last_batch or not self.use_ddp:
-                losses = compute_losses()
-            else:
-                with self.ddp_model.no_sync():
-                    losses = compute_losses()
-
-            loss = (losses["loss"]).mean()
-            log_loss_dict(
-                self.flow_matching, t, {k: v  for k, v in losses.items()}
-            )
-            self.mp_trainer.backward(loss)
-
     def log_step(self):
         logger.logkv("step", self.total_step() + self.resume_step)
         logger.logkv("samples", (self.total_step() + 1) * self.global_batch)

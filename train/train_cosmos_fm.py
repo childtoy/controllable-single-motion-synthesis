@@ -14,7 +14,7 @@ from utils.fixseed import fixseed
 from utils.parser_util import train_cosmos_args
 from utils import dist_util
 from train.training_loop_cosmos_fm import TrainLoop
-from utils.model_util import create_model_and_flow_matching
+from utils.model_util import create_model
 from train.train_platforms import  NoPlatform  
 
 def main():
@@ -41,13 +41,13 @@ def main():
     
     print("creating model and diffusion...")
     args.unconstrained = True
-    model, flow_matching = create_model_and_flow_matching(args, motion_data, motion.shape[1])
+    model = create_model(args, motion_data, motion.shape[1])
     model.to(dist_util.dev())
-    flow_matching.to(dist_util.dev())
+    # flow_matching.to(dist_util.dev())
 
     print('Total params: %.2fM' % (sum(p.numel() for p in model.parameters()) / 1000000.0))
     print("Training...")
-    TrainLoop(args, train_platform, model, flow_matching, data=None).run_loop(motion, labels)
+    TrainLoop(args, train_platform, model, data=None).run_loop(motion, labels)
     train_platform.close()
 
 if __name__ == "__main__":

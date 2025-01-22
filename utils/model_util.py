@@ -2,48 +2,42 @@ from diffusion import gaussian_diffusion as gd
 from diffusion.respace import SpacedDiffusion, space_timesteps
 from models.mdm_qnanet import QnAMDM
 from models.mdm_unet import MDM_UNetModel
-from models.cosmos_unet import COSMOS_UNetModel
+from models.cosmos_unet import COSMOS_UNetModel, COSMOS_FlowModel
 from utils.motion_flow_matching import MotionFlowMatching
 
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0
 
-def create_model_and_flow_matching(args, data, num_joints = None):
+def create_model(args, data, num_joints = None):
     motion_args = get_model_args(args, data, num_joints)
-    
-    if args.arch == 'cosmos':
-        model = create_motion_cosmos(
-            motion_args,
-            args.image_size,
-            args.num_channels,
-            args.num_res_blocks,
-            channel_mult=args.channel_mult,
-            learn_sigma=args.learn_sigma,
-            class_cond=args.class_cond,
-            num_densecond_dim=args.num_densecond_dim,
-            use_checkpoint=args.use_checkpoint,
-            attention_resolutions=args.attention_resolutions,
-            num_heads=args.num_heads,
-            num_head_channels=args.num_head_channels,
-            num_heads_upsample=args.num_heads_upsample,
-            use_scale_shift_norm=args.use_scale_shift_norm,
-            dropout=args.dropout,
-            resblock_updown=args.resblock_updown,
-            use_fp16=args.use_fp16,
-            use_new_attention_order=args.use_new_attention_order,
-            conv_1d=args.conv_1d,
-            padding_mode=args.padding_mode,
-            padding=args.padding,
-            use_attention=args.use_attention,
-            use_qna=args.use_qna,
-            kernel_size=args.kernel_size,
-        )
-    else:
-        raise ValueError(f"Architecture {args.arch} not supported for flow matching")
-
-    flow_matching = MotionFlowMatching(sigma=args.sigma)
-    return model, flow_matching
+    model = COSMOS_FlowModel(
+        motion_args=motion_args,
+        image_size=args.image_size,
+        in_channels=motion_args['njoints'] * motion_args['nfeats'],
+        model_channels=args.num_channels,
+        out_channels=motion_args['njoints'] * motion_args['nfeats'],
+        num_res_blocks=args.num_res_blocks,
+        channel_mult=args.channel_mult,
+        num_densecond_dim=args.num_densecond_dim,
+        attention_resolutions=args.attention_resolutions,
+        dropout=args.dropout,
+        use_checkpoint=args.use_checkpoint,
+        use_fp16=args.use_fp16,
+        num_heads=args.num_heads,
+        num_head_channels=args.num_head_channels,
+        num_heads_upsample=args.num_heads_upsample,
+        use_scale_shift_norm=args.use_scale_shift_norm,
+        resblock_updown=args.resblock_updown,
+        use_new_attention_order=args.use_new_attention_order,
+        padding_mode=args.padding_mode,
+        padding=args.padding,
+        use_attention=args.use_attention,
+        use_qna=args.use_qna,
+        kernel_size=args.kernel_size,
+    )
+    # flow_matching = MotionFlowMatching(sigma=args.sigma)
+    return model
 
 def create_model_and_diffusion(args, data, num_joints = None):
     motion_args = get_model_args(args, data, num_joints)
