@@ -9,6 +9,7 @@
 *.pdf
 t2m/
 *.ipynb
+wandb/
 prepare/
 save/
 dataset/
