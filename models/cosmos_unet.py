@@ -413,7 +413,78 @@ class SinusoidalPositionEmbeddings(nn.Module):
         time = torch.cat([time, torch.cos(time), torch.sin(time)], dim=-1)
         return self.embedding_l(time)
     
+class TimestepEmbedder(nn.Module):
+    def __init__(self, latent_dim, time_embed_dim, sequence_pos_encoder, time_resolution=1000):
+        super().__init__()
+        self.time_resolution = time_resolution
+        self.latent_dim = latent_dim
+        self.sequence_pos_encoder = sequence_pos_encoder
+
+        time_embed_dim = time_embed_dim
+        self.time_embed = nn.Sequential(
+            nn.Linear(self.latent_dim, time_embed_dim),
+            nn.SiLU(),
+            nn.Linear(time_embed_dim, time_embed_dim),
+        )
+
+    def forward(self, timesteps):
+        timesteps = (timesteps * self.time_resolution).long()
+        return self.time_embed(self.sequence_pos_encoder.pe[timesteps]).squeeze()
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        # not used in the final model
+        x = x + self.pe[: x.shape[0], :]
+        return self.dropout(x)
+
+    
 class COSMOS_FlowModel(nn.Module):
+    """
+    The full UNet model with attention and timestep embedding.
+
+    :param in_channels: channels in the input Tensor.
+    :param model_channels: base channel count for the model.
+    :param out_channels: channels in the output Tensor.
+    :param num_res_blocks: number of residual blocks per downsample.
+    :param attention_resolutions: a collection of downsample rates at which
+        attention will take place. May be a set, list, or tuple.
+        For example, if this contains 4, then at 4x downsampling, attention
+        will be used.
+    :param dropout: the dropout probability.
+    :param channel_mult: channel multiplier for each level of the UNet.
+    :param conv_resample: if True, use learned convolutions for upsampling and
+        downsampling.
+    :param dims: determines if the signal is 1D, 2D, or 3D.
+    :param num_classes: if specified (as an int), then this model will be
+        class-conditional with `num_classes` classes.
+    :param use_checkpoint: use gradient checkpointing to reduce memory usage.
+    :param num_heads: the number of attention heads in each attention layer.
+    :param num_heads_channels: if specified, ignore num_heads and instead use
+                               a fixed channel width per attention head.
+    :param num_heads_upsample: works with num_heads to set a different number
+                               of heads for upsampling. Deprecated.
+    :param use_scale_shift_norm: use a FiLM-like conditioning mechanism.
+    :param resblock_updown: use residual blocks for up/downsampling.
+    :param use_new_attention_order: use a different attention pattern for potentially
+                                    increased efficiency.
+    """
+
     def __init__(
         self,
         motion_args,
@@ -425,7 +496,9 @@ class COSMOS_FlowModel(nn.Module):
         attention_resolutions,
         dropout=0,
         channel_mult=(1, 2, 4, 8),
+        conv_resample=True,
         dims=2,
+        num_classes=None,
         num_densecond_dim=1,
         use_checkpoint=False,
         use_fp16=False,
@@ -438,30 +511,15 @@ class COSMOS_FlowModel(nn.Module):
         padding_mode='zeros',
         padding=1,
         use_attention=False,
-        use_qna=False,
+        use_qna=True,
         kernel_size=3,
     ):
         super().__init__()
-        
-        # Motion specific args
+
+        if num_heads_upsample == -1:
+            num_heads_upsample = num_heads
+
         self.motion_args = motion_args
-        # Time embedding
-        time_dim = model_channels * 4
-        
-        self.time_mlp = nn.Sequential(
-            linear(model_channels, time_dim),
-            nn.SiLU(),
-            linear(time_dim, time_dim),
-        )
-
-        # self.time_mlp = nn.Sequential(
-        #     SinusoidalPositionEmbeddings(model_channels),
-        #     nn.Linear(model_channels, time_dim),
-        #     nn.SiLU(),
-        #     nn.Linear(time_dim, time_dim),
-        # )
-
-        # Model parameters
         self.image_size = image_size
         self.in_channels = in_channels
         self.model_channels = model_channels
@@ -470,29 +528,54 @@ class COSMOS_FlowModel(nn.Module):
         self.attention_resolutions = attention_resolutions
         self.dropout = dropout
         self.channel_mult = channel_mult
-        self.dims = dims
+        self.conv_resample = conv_resample
+        self.num_classes = num_classes
         self.num_densecond_dim = num_densecond_dim
         self.use_checkpoint = use_checkpoint
-        self.dtype = torch.float16 if use_fp16 else torch.float32
+        self.dtype = th.float16 if use_fp16 else th.float32
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
-        
-        
-        # Build model
-        
-        # ch = input_ch = int(channel_mult[0] * model_channels)
-        ch = input_ch = 256
-        # print('ch', int(channel_mult[0] * model_channels))
-        # print('dims', dims, in_channels, ch, kernel_size, padding, padding_mode)
-        # print('resjl',  model_channels * channel_mult[0])
+        self.sub_sample_mult = np.power(2, len(self.channel_mult))
+        self.dims = dims
+        self.padding_mode = padding_mode
+        self.padding = padding
 
-        self.input_blocks = nn.ModuleList([
-            TimestepEmbedSequential(
-                conv_nd(dims, in_channels, ch, kernel_size, padding=padding, padding_mode=padding_mode)
+
+        for k, v in motion_args.items():
+            setattr(self, k, v)
+
+        time_embed_dim = model_channels * 4
+        # self.time_embed = nn.Sequential(
+        #     linear(model_channels, time_embed_dim),
+        #     nn.SiLU(),
+        #     linear(time_embed_dim, time_embed_dim),
+        # )
+        self.sequence_pos_encoder = PositionalEncoding(model_channels, self.dropout)        
+        self.time_embed = TimestepEmbedder(
+            model_channels, time_embed_dim, self.sequence_pos_encoder
+        )
+
+        # self.time_embed = TimestepEmbedder(
+        #     self.latent_dim, self.sequence_pos_encoder
+        # )
+
+        if self.num_classes is not None:
+            self.label_emb = nn.Embedding(num_classes, time_embed_dim)
+
+
+            
+        ch = input_ch = int(channel_mult[0] * model_channels)
+        
+        if self.num_densecond_dim > 0 :
+            self.densecond_embed = nn.Sequential(
+                nn.Conv1d(in_channels=num_densecond_dim, out_channels=ch, kernel_size=1, stride=1),
+                nn.SiLU(),
+                nn.Conv1d(in_channels=ch, out_channels=ch, kernel_size=1, stride=1)
             )
-        ])
-        # Input half
+        self.input_blocks = nn.ModuleList(
+            [TimestepEmbedSequential(conv_nd(dims, in_channels, ch, 3, padding=padding, padding_mode=self.padding_mode))]
+        )
         self._feature_size = ch
         input_block_chans = [ch]
         ds = 1
@@ -511,9 +594,11 @@ class COSMOS_FlowModel(nn.Module):
                         padding=padding,
                     )
                 ]
-                ch = mult * model_channels
-                if ds in attention_resolutions and use_attention:
-                    layers.append(
+                ch = int(mult * model_channels)
+                if use_attention:
+                    if ds in attention_resolutions:
+                        print(f'added attention block for input block, level {np.log2(ds) + 1}')
+                        layers.append(
                             AttentionBlock(
                                 ch,
                                 use_checkpoint=use_checkpoint,
@@ -543,143 +628,205 @@ class COSMOS_FlowModel(nn.Module):
                             padding_mode=padding_mode,
                             padding=padding,
                         )
+                        # if resblock_updown
+                        # else Downsample(
+                            # ch, conv_resample, dims=dims, out_channels=out_ch, padding_mode=padding_mode, padding=padding
+                        # )
                     )
                 )
                 ch = out_ch
                 input_block_chans.append(ch)
-                ds *= 2
+                # ds *= 2
                 self._feature_size += ch
 
-        # Middle block
-        self.middle_block = TimestepEmbedSequential(
-            ResBlock(
-                ch,
-                time_dim,
-                dropout,
-                dims=dims,
-                use_checkpoint=use_checkpoint,
-                use_scale_shift_norm=use_scale_shift_norm,
-                kernel_size=kernel_size,
-                padding_mode=padding_mode,
-                padding=padding,
-            ),
-            AttentionBlock(
-                ch,
-                use_checkpoint=use_checkpoint,
-                num_heads=num_heads,
-                num_head_channels=num_head_channels,
-                use_new_attention_order=use_new_attention_order,
-            ) if use_attention else nn.Identity(),
-            ResBlock(
-                ch,
-                time_dim,
-                dropout,
-                dims=dims,
-                use_checkpoint=use_checkpoint,
-                use_scale_shift_norm=use_scale_shift_norm,
-                kernel_size=kernel_size,
-                padding_mode=padding_mode,
-                padding=padding,
-            ),
-        )
-        self._feature_size += ch
-
-        # Output half
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
             for i in range(num_res_blocks + 1):
                 ich = input_block_chans.pop()
+                if level == len(channel_mult) - 1 and i == 0:
+                    ich = 0
                 layers = [
                     ResBlock(
                         ch + ich,
-                        time_dim,
+                        time_embed_dim,
                         dropout,
-                        out_channels=model_channels * mult,
+                        out_channels=int(model_channels * mult),
                         dims=dims,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
-                        kernel_size=kernel_size,
                         padding_mode=padding_mode,
                         padding=padding,
                     )
                 ]
-                ch = model_channels * mult
-                if ds in attention_resolutions and use_attention:
-                    layers.append(
-                        AttentionBlock(
-                            ch,
-                            use_checkpoint=use_checkpoint,
-                            num_heads=num_heads_upsample,
-                            num_head_channels=num_head_channels,
-                            use_new_attention_order=use_new_attention_order,
+                ch = int(model_channels * mult)
+                if use_attention:
+                    if ds in attention_resolutions:
+                        print(f'added attention block for output block, level {np.log2(ds) + 1}')
+                        layers.append(
+                            AttentionBlock(
+                                ch,
+                                use_checkpoint=use_checkpoint,
+                                num_heads=num_heads_upsample,
+                                num_head_channels=num_head_channels,
+                                use_new_attention_order=use_new_attention_order,
+                                use_qna=use_qna,
+                            )
                         )
-                    )
                 if level and i == num_res_blocks:
                     out_ch = ch
                     layers.append(
                         ResBlock(
                             ch,
-                            time_dim,
+                            time_embed_dim,
                             dropout,
                             out_channels=out_ch,
                             dims=dims,
                             use_checkpoint=use_checkpoint,
                             use_scale_shift_norm=use_scale_shift_norm,
                             up=True,
-                            kernel_size=kernel_size,
                             padding_mode=padding_mode,
                             padding=padding,
                         )
+                        # if resblock_updown
+                        # else Upsample(ch, conv_resample, dims=dims, out_channels=out_ch, padding_mode=padding_mode, padding=padding)
                     )
-                    ds //= 2
+                    # ds //= 2
                 self.output_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
 
-        # Final layers
         self.out = nn.Sequential(
             normalization(ch),
             nn.SiLU(),
-            zero_module(
-                conv_nd(dims, model_channels, out_channels, kernel_size, padding=padding, padding_mode=padding_mode)
-            ),
+            zero_module(conv_nd(dims, input_ch, out_channels, 3, padding=padding, padding_mode=padding_mode)),
         )
+        
+        self.out_cond = nn.Sequential(
+            normalization(ch),
+            nn.SiLU(),
+            zero_module(conv_nd(dims, input_ch, 3, 3, padding=padding, padding_mode=padding_mode)),
+        )
+        
+    def convert_to_fp16(self):
+        """
+        Convert the torso of the model to float16.
+        """
+        self.input_blocks.apply(convert_module_to_f16)
+        self.output_blocks.apply(convert_module_to_f16)
 
-    def forward(self, x, t, y=None):
+    def convert_to_fp32(self):
+        """
+        Convert the torso of the model to float32.
+        """
+        self.input_blocks.apply(convert_module_to_f32)
+        self.output_blocks.apply(convert_module_to_f32)
+
+    def mask_cond(self, cond):
+        bs, d = cond.shape
+        if self.training and self.motion_args['cond_mask_prob'] > 0.:
+            mask = th.bernoulli(th.ones(bs, device=cond.device) * self.motion_args['cond_mask_prob']).view(bs, 1)  # 1-> use null_cond, 0-> use real cond
+            return cond * (1. - mask)
+        else:
+            return cond
+
+    def forward(self, x, timesteps, y=None):
         """
         Apply the model to an input batch.
-        :param x: motion data [B, C, J, T]
-        :param t: time parameter [B, 1]
-        :param y: conditioning (optional)
-        :return: velocity field prediction
+
+        :param x: an [N x C x ...] Tensor of inputs.
+        :param timesteps: a 1-D batch of timesteps.
+        :param y: an [N] Tensor of labels, if class-conditional.
+        :return: an [N x C x ...] Tensor of outputs.
         """
-        # Time embedding
-        t_emb = self.time_mlp(t)
-        
-        # Process input
         hs = []
-        h = x.type(self.dtype)
-        
-        # Down blocks
+        hs_cond = []
+        y_densecond = y['frame_labels']
+        # timesteps = timesteps.unsqueeze(1)
+        if len(timesteps.shape) == 0:  # mainly in ODE sampling
+            timesteps = repeat(timesteps.unsqueeze(0), "1 -> b", b=len(x))
+        emb = self.time_embed(timesteps)  # [1, bs, d]
+        if 'text' in self.motion_args['cond_mode']:
+            emb += self.embed_text(self.mask_cond(y['text']))
+
+        if self.motion_args['dataset'] == 'humanml':
+            if self.dims == 1:
+                self.n_samples, self.n_joints, self.n_feats, self.n_frames = x.shape
+                x = x.reshape(self.n_samples, -1, self.n_frames)
+        elif self.motion_args['dataset'] in ['mixamo', 'babel', 'bvh_general']:
+            self.n_samples, self.n_joints, self.n_feats, self.n_frames = x.shape
+            if self.dims == 1:
+                x = x.reshape(self.n_samples, -1, self.n_frames)
+            else:
+                x = x.reshape(self.n_samples, -1, 1, self.n_frames)
+            assert x.shape[1] == self.n_joints * self.n_feats
+        else:
+            raise 'dataset not supported yet.'
+
+        if self.dims == 1:
+            self.resid_frames = ((self.sub_sample_mult - x.shape[2:] % self.sub_sample_mult) % self.sub_sample_mult)[0]
+            self.resid_joints = 0
+        else:
+            self.resid_joints, self.resid_frames = (self.sub_sample_mult - x.shape[2:] % self.sub_sample_mult) % self.sub_sample_mult
+
+        if self.dims == 1:
+            # pad frame axis with zeros
+            x = th.cat(
+                [x, th.zeros((x.shape[0], x.shape[1], self.resid_frames), device=x.device, dtype=x.dtype)],
+                dim=-1)  # [bs, 1, J, n_frames] -> [bs, 1, J, padded n_frames]
+            y_densecond = th.cat([y_densecond, th.zeros((x.shape[0], self.num_densecond_dim, self.resid_frames), device=x.device, dtype=y_densecond.dtype)],
+                dim=-1)
+        else:
+            # pad frame axis with zeros
+            x = th.cat([x, th.zeros((x.shape[0], x.shape[1], x.shape[2], self.resid_frames), device=x.device, dtype=x.dtype)],
+                       dim=-1)  # [bs, 1, J, n_frames] -> [bs, 1, J, padded n_frames]
+
+            # pad joint axis with zeros
+            x = th.cat([x, th.zeros((x.shape[0], x.shape[1], self.resid_joints, x.shape[3]), device=x.device, dtype=x.dtype)],
+                       dim=-2)  # [bs, 1, J, n_frames] -> [bs, 1, padded J, n_frames]
+
+        if self.num_densecond_dim > 0:
+            h_densecond = self.densecond_embed(y_densecond)
+
+
+        if self.num_classes is not None:
+            assert y.shape == (x.shape[0],)
+            emb = emb + self.label_emb(y)
+        h = x.type(self.dtype)  # if y is None else th.cat([x, y], dim=1).type(self.dtype)
         for module in self.input_blocks:
-            h, _ = module(h, t_emb)
+            h, h_densecond = module(h, emb, h_densecond)
             hs.append(h)
-            
-        # Middle block
-        h, _ = self.middle_block(h, t_emb)
-        
-        # Up blocks
-        for module in self.output_blocks:
-            h = torch.cat([h, hs.pop()], dim=1)
-            h, _ = module(h, t_emb)
-            
-        # Final prediction (velocity field)
+            hs_cond.append(h_densecond)
+        for level, module in enumerate(self.output_blocks):
+            if level == 0:
+                h = hs.pop()
+                h_densecond = hs_cond.pop()
+            else:
+                h = th.cat([h, hs.pop()], dim=1)
+                h_densecond = th.cat([h_densecond, hs_cond.pop()], dim=1)
+            h, h_densecond = module(h, emb, h_densecond)
         h = h.type(x.dtype)
-        velocity = self.out(h)
+        _out = self.out(h)
+        _out_cond = self.out_cond(h_densecond)
         
-        # if self.motion_args['dataset'] in ['humanml', 'babel', 'mixamo', 'bvh_general']:
-        #     velocity = velocity.reshape(self.n_samples, self.n_joints, self.n_feats, self.n_frames)
-            
-        return velocity    
+        if self.resid_frames > 0:
+            if self.dims == 1:
+                _out = _out[:, :, :-self.resid_frames]
+                _out_cond = _out_cond[:,:,:-self.resid_frames]
+            else:
+                _out = _out[:, :, :, :-self.resid_frames]
+
+        if self.resid_joints > 0:
+            _out = _out[:, :, :-self.resid_joints, :]
+
+        if self.motion_args['dataset'] == 'humanml':
+            if self.dims == 1:
+                _out = _out.reshape(self.n_samples, self.n_joints, self.n_feats, self.n_frames)
+        elif self.motion_args['dataset'] in ['mixamo', 'babel', 'bvh_general']:
+            _out = _out.reshape(self.n_samples, self.n_joints, self.n_feats, self.n_frames)
+            _out_cond = _out_cond.reshape(self.n_samples, 3, self.n_frames)
+        else:
+            raise 'dataset not supported yet.'    
+        _out_cond = F.softmax(_out_cond, dim=1)
+        return _out, _out_cond
 
 class COSMOS_UNetModel(nn.Module):
     """
@@ -959,7 +1106,8 @@ class COSMOS_UNetModel(nn.Module):
         hs = []
         hs_cond = []
         y_densecond = y['frame_labels']
-        emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
+        emb = self.time_embed(timesteps)
+
         if 'text' in self.motion_args['cond_mode']:
             emb += self.embed_text(self.mask_cond(y['text']))
 

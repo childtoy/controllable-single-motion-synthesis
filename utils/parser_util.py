@@ -4,6 +4,39 @@ import os
 import json
 import sys
 
+def parse_and_load_from_model_demo(parser, model_path):
+    # args according to the loaded model
+    # do not try to specify them from cmd line since they will be overwritten
+    add_data_options(parser)
+    add_model_options(parser)
+    add_diffusion_options(parser)
+    add_single_motion_options(parser)
+    args = parser.parse_args()
+    args.model_path = model_path
+    args_to_overwrite = []
+    for group_name in ['dataset', 'model', 'diffusion']:
+        args_to_overwrite += get_args_per_group_name(parser, args, group_name)
+
+    # load args from model
+    # model_path = get_model_path_from_args()
+    model_path = args.model_path
+    args_path = os.path.join(os.path.dirname(model_path), 'args.json')
+    assert os.path.exists(args_path), f'Arguments json file {args_path} was not found!'
+    with open(args_path, 'r') as fr:
+        model_args = json.load(fr)
+
+    for a in args_to_overwrite:
+        if a in model_args.keys():
+            setattr(args, a, model_args[a])
+
+        elif 'cond_mode' in model_args: # backward compatability
+            unconstrained = (model_args['cond_mode'] == 'no_cond')
+            setattr(args, 'unconstrained', unconstrained)
+
+        else:
+            print('Warning: was not able to load [{}], using default value [{}] instead.'.format(a, args.__dict__[a]))
+    return args
+
 
 def parse_and_load_from_model(parser):
     # args according to the loaded model
@@ -213,7 +246,6 @@ def add_sampling_options(parser):
                        help="Maximal number of prompts to sample, "
                             "if loading dataset from file, this field will be ignored.")
 
-
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
     group.add_argument("--motion_length", default=None, type=float,
@@ -249,6 +281,30 @@ def add_edit_options(parser):
     group.add_argument("--ref_motion", type=str, default="", required=False,
                        help="Refenrence motion to be used for editing.")
     group.add_argument("--num_frames", type=int, default=-1, required=False)
+
+
+
+def add_demo_options(parser):
+    group = parser.add_argument_group('demo')
+    group.add_argument("--cuda", default=True, type=bool, help="Use cuda device, otherwise use CPU.")
+    group.add_argument("--device", default=0, type=int, help="Device id to use.")
+    group.add_argument("--seed", default=10, type=int, help="For fixing random seed.")
+    group.add_argument("--batch_size", default=64, type=int, help="Batch size during training.")
+    group.add_argument("--path_prefix", default='', type=str, help="prefix of output path")
+    group.add_argument("--model_path", type=str,
+                       help="Path to model####.pt file to be sampled.")
+    group.add_argument("--output_dir", default='', type=str,
+                       help="Path to results dir (auto created by the script). "
+                            "If empty, will create dir in parallel to checkpoint.")
+    group.add_argument("--num_samples", default=10, type=int,
+                       help="Maximal number of prompts to sample, "
+                            "if loading dataset from file, this field will be ignored.")
+    group.add_argument("--motion_length", default=None, type=float,
+                       help="The length of the sampled motion [in seconds]. "
+                            "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
+    group.add_argument("--labels_str", default='', type=str,
+                       help="frame labels splited by 's' i.e 85s80s40")    
+
 
 
 def add_evaluation_options(parser):
@@ -302,6 +358,12 @@ def generate_cosmos_args():
     add_sampling_options(parser)
     add_generate_options(parser)
     return parse_and_load_from_model(parser)
+
+def demo_cosmos_args(model_path):
+    parser = ArgumentParser()
+    # args specified by the user: (all other will be loaded from the model)
+    add_demo_options(parser)
+    return parse_and_load_from_model_demo(parser, model_path)
 
 def evaluation_parser():
     parser = ArgumentParser()

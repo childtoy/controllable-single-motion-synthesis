@@ -3,6 +3,7 @@ from diffusion.respace import SpacedDiffusion, space_timesteps
 from models.mdm_qnanet import QnAMDM
 from models.mdm_unet import MDM_UNetModel
 from models.cosmos_unet import COSMOS_UNetModel, COSMOS_FlowModel
+from utils.flow_matching import FlowMatching
 
 # from utils.motion_flow_matching import MotionFlowMatching
 
@@ -10,10 +11,9 @@ def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0
 
-def create_model(args, data, num_joints = None):
-    from utils.motion_flow_matching import MotionFlowMatching
+def create_flow_model(args, data, num_joints = None):
     motion_args = get_model_args(args, data, num_joints)
-    model = create_motion_cosmos(
+    model = create_motion_cosmos_flow(
             motion_args,
             args.image_size,
             args.num_channels,
@@ -39,8 +39,8 @@ def create_model(args, data, num_joints = None):
             use_qna=args.use_qna,
             kernel_size=args.kernel_size,
         )                
-    flow_matching = MotionFlowMatching()
-    
+    flow_matching = FlowMatching()
+
     # model = COSMOS_FlowModel(
     #     motion_args=motion_args,
     #     image_size=args.image_size,
@@ -297,6 +297,82 @@ def create_motion_unet(
         kernel_size=kernel_size,
     )
     
+    
+def create_motion_cosmos_flow(
+    motion_args,
+    image_size,
+    num_channels,
+    num_res_blocks,
+    channel_mult="",
+    learn_sigma=False,
+    class_cond=False,
+    num_densecond_dim=1,
+    use_checkpoint=False,
+    attention_resolutions="16",
+    num_heads=1,
+    num_head_channels=-1,
+    num_heads_upsample=-1,
+    use_scale_shift_norm=False,
+    dropout=0,
+    resblock_updown=False,
+    use_fp16=False,
+    use_new_attention_order=False,
+    conv_1d=False,
+    padding_mode='zeros',
+    padding=1,
+    use_attention=False,
+    use_qna=False,
+    kernel_size=3,
+):
+    if channel_mult == "":
+        if image_size == 512:
+            channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
+        elif image_size == 256:
+            channel_mult = (1, 1, 2, 2, 4, 4)
+        elif image_size == 128:
+            channel_mult = (1, 1, 2, 3, 4)
+        elif image_size == 64:
+            channel_mult = (1, 2, 3, 4)
+        else:
+            raise ValueError(f"unsupported image size: {image_size}")
+    else:
+        channel_mult = tuple(int(ch_mult) for ch_mult in channel_mult.split(","))
+    print('channel_mult',channel_mult)
+    attention_ds = []
+    for res in attention_resolutions.split(","):
+        attention_ds.append(image_size // int(res))
+    if motion_args['dataset'] in ['humanml', 'babel', 'mixamo', 'bvh_general']:
+        ch = motion_args['njoints'] * motion_args['nfeats']
+    else:
+        raise 'dataset is not supported yet.'
+    print('load COSMOS UNet')
+    
+    return COSMOS_FlowModel(
+        motion_args=motion_args,
+        image_size=image_size,
+        in_channels=ch,
+        model_channels=num_channels,
+        out_channels=ch,
+        num_res_blocks=num_res_blocks,
+        attention_resolutions=tuple(attention_ds),
+        dropout=dropout,
+        channel_mult=channel_mult,
+        dims=1 if conv_1d else 2,
+        num_densecond_dim = num_densecond_dim,
+        use_checkpoint=use_checkpoint,
+        use_fp16=use_fp16,
+        num_heads=num_heads,
+        num_head_channels=num_head_channels,
+        num_heads_upsample=num_heads_upsample,
+        use_scale_shift_norm=use_scale_shift_norm,
+        resblock_updown=resblock_updown,
+        use_new_attention_order=use_new_attention_order,
+        padding_mode=padding_mode,
+        padding=padding,
+        use_attention=use_attention,
+        use_qna=use_qna,
+        kernel_size=kernel_size,
+    )    
     
 def create_motion_cosmos(
     motion_args,

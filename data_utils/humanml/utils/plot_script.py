@@ -222,7 +222,7 @@ def explicit_plot_3d_motion(save_path, kinematic_tree, joints, title, dataset, f
     elif dataset =='babel':
         data *= -1.3
     elif dataset in ['mixmamo', 'bvh_general']:
-        data *= 0.02
+        data *= 0.05
 
     # data[:, :, 1] *= -1  # y축 상하반전
     # data[:, :, 2] *= -1  # z축 앞뒤반전
@@ -311,5 +311,5 @@ def explicit_plot_3d_motion(save_path, kinematic_tree, joints, title, dataset, f
         ax.set_zticklabels([])
 
     ani = FuncAnimation(fig, update, frames=frame_number, interval=1000 // fps, repeat=False)
-    ani.save(save_path, fps=fps)
+    ani.save(save_path, fps=fps, writer='imagemagick')
     plt.close()

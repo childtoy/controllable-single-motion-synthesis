@@ -56,6 +56,7 @@ def main(args=None):
         assert args.dataset == 'humanml'
         fps = 20
         
+        
     dense_labels = [0]*30+[1]*30+[2]*30
     num_densecond_dims = len(set(dense_labels))
     n_frames = len(dense_labels)     

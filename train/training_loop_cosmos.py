@@ -3,6 +3,7 @@ import functools
 import os
 import random
 import time
+import sys
 
 import blobfile as bf
 import numpy as np
@@ -14,6 +15,14 @@ from diffusion.fp16_util import MixedPrecisionTrainer
 from diffusion.resample import LossAwareSampler
 from diffusion.resample import create_named_schedule_sampler
 from utils import dist_util
+
+from Motion.transforms import repr6d2quat, quat2repr6d
+from Motion import BVH
+from Motion.Animation import positions_global as anim_pos
+from Motion.Animation import Animation
+from Motion.AnimationStructure import get_kinematic_chain
+from Motion.Quaternions import Quaternions
+from data_utils.humanml.utils.plot_script import plot_3d_motion
 
 # For ImageNet experiments, this was a good default value.
 # We found that the lg_loss_scale quickly climbed to
@@ -130,6 +139,7 @@ class TrainLoop:
 
     def run_loop(self, motion, labels):
         n_sample, n_joints, n_features, n_frames = motion.shape
+        self.motion_shape = motion.shape
         labels = F.one_hot(labels.to(th.int64), num_classes=self.num_densecond_dim).to(self.args.device)
         labels = labels.permute(0,2,1).float()
         start_time_measure = time.time()
@@ -139,10 +149,11 @@ class TrainLoop:
             batch = motion[idx] # [B x C x L]
             cond = {'y': {'mask': None, 'frame_labels': labels[idx]}}
             self.run_step(batch, cond)
+            self.visualize()  
             start_time_measure, time_measure = self.apply_logging(start_time_measure, time_measure)
-
             if self.total_step() % self.save_interval == 0 and self.total_step() != 0 or self.total_step() == self.num_steps - 1:
                 self.save()
+                self.visualize()                       
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.total_step() > 0:
                     return
@@ -172,6 +183,54 @@ class TrainLoop:
                                               iteration=self.total_step(), group_name='LR')
         return start_time_measure, time_measure
 
+    def visualize(self):
+        self.ddp_model.eval()
+        bvh_path = os.path.join(self.save_dir, f'eval_sample{self.step:02d}.bvh')
+        sin_anim, joint_names, frametime = BVH.load(self.args.sin_path)
+        skeleton = get_kinematic_chain(sin_anim.parents)
+        eval_batch_size = 1
+        # repr_6d = quat2repr6d(th.tensor(sin_anim.rotations.qs))
+        # motion = np.concatenate([sin_anim.positions, repr_6d], axis=2)
+        # motion = th.from_numpy(motion)
+        # motion = motion.permute(1, 2, 0)  # n_frames x n_joints x n_feats  ==> n_joints x n_feats x n_frames
+        # motion = motion.reshape(-1, motion.shape[-1]).unsqueeze(0) # n_joints x n_feats x n_frames (n_joints = 1)
+        # motion = motion.to(th.float32)  # align with network dtype
+        # sample = motion
+        sample_fn = self.diffusion.p_sample_loop
+
+        sample = sample_fn(
+            self.ddp_model,
+            (self.args.batch_size, self.ddp_model.njoints, self.ddp_model.nfeats, 334),
+            clip_denoised=False,
+            model_kwargs=self.eval_model_kwargs,
+            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
+            init_image=None,
+            progress=True,
+            dump_steps=None,
+            noise=None,
+            const_noise=False,
+        )
+        sample = sample.permute(0,3,2,1)
+        one_sample = sample[0].reshape(self.motion_shape[-1], -1, 9).cpu().numpy()
+        # one_sample = sample[0].reshape(167, 63, 9).cpu().numpy()
+        quats = repr6d2quat(th.tensor(one_sample[:, :, 3:])).cpu().numpy()
+        anim = Animation(rotations=Quaternions(quats), positions=one_sample[:,:,:3],
+                                orients=sin_anim.orients, offsets=sin_anim.offsets, parents=sin_anim.parents)
+        BVH.save(os.path.expanduser(bvh_path), anim, joint_names, frametime, positions=True)  # "positions=True" is important for the dragon and does not harm the others
+        xyz_samples = anim_pos(anim)  # n_frames x n_joints x 3  =>
+        # print('xyz_samples', xyz_samples.shape)
+        sample = xyz_samples  # n_frames x n_joints x 3  
+        sample_tmp = sample.copy()
+        # sample[:,:,2] = sample_tmp[:,:,1] *-1
+        # sample[:,:,1] = sample_tmp[:,:,2]
+        caption = 'evaluation sample'
+        length = self.motion_shape[-1]
+        animation_save_path = os.path.join(self.save_dir, f'eval_sample{self.step:02d}.gif')
+        motion_to_plot = copy.deepcopy(sample)
+        plot_3d_motion(animation_save_path, skeleton, motion_to_plot, dataset=self.args.dataset, title=caption, fps=20)
+        self.ddp_model.train()
+         
+         
     def print_changed_lr(self, lr_saved):
         lr_cur = self.opt.param_groups[0]['lr']
         if lr_saved is not None:
@@ -201,6 +260,7 @@ class TrainLoop:
             assert self.microbatch == self.batch_size
             micro = batch
             micro_cond = cond
+            self.eval_model_kwargs = micro_cond 
             last_batch = (i + self.microbatch) >= batch.shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
 
