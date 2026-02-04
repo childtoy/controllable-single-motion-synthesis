@@ -8,6 +8,7 @@
 *.jpg
 *.pdf
 t2m/
+*.mp4
 *.ipynb
 wandb/
 prepare/
