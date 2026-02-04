@@ -8,6 +8,8 @@
 *.jpg
 *.pdf
 t2m/
+demo/
+demo_assets/
 *.mp4
 *.ipynb
 wandb/
